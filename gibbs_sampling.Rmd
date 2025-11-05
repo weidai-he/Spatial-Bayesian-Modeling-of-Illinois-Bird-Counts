@@ -1,0 +1,622 @@
+---
+title: "Gibbs Sampling"
+author: "Weidai He"
+date: "2025-10-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Bioluminescence data
+```{r}
+ISIT <- read.delim("ISIT.txt")
+head(ISIT)
+```
+
+```{r}
+Sources16 <- ISIT$Sources[ISIT$Station == 16]
+Depth16 <- ISIT$SampleDepth[ISIT$Station == 16]
+Sources16 <- Sources16[order(Depth16)]
+Depth16 <- sort(Depth16)
+plot(Depth16, Sources16, las = 1, ylim = c(0, 65), col = rgb(0, 0, 0, 0.25), pch = 19)
+```
+
+### Gibbs sampler
+```{r}
+library(MASS)
+y <- Sources16
+X <- model.matrix(~Depth16)
+m.draws <- 2000 #Number of MCMC samples to draw
+samples <- as.data.frame(matrix(, m.draws + 1, dim(X)[2] + 1))
+colnames(samples) <- c(colnames(X), "sigma2")
+samples[1, ] <- c(rep(NA, dim(X)[2]), 1) #Starting values for sigma2
+sigma2.beta <- 100 #Prior variance for beta
+q <- 2.01 #Inverse gamma prior with E() = r/(q-1) and Var()= r^2/((q-1)^2(q-2))
+r <- 1
+for (k in 1:m.draws) {
+  A <- solve(t(X) %*% X + diag(1/sigma2.beta, dim(X)[2]))
+  b <- t(X) %*% y
+  sigma2.e <- samples[k, dim(X)[2] + 1]
+  beta <- mvrnorm(1, A %*% b, sigma2.e * A)
+  sigma2.e <- 1/rgamma(1, q + length(y)/2, r + t(y - X %*% beta) %*%
+  (y - X %*% beta)/2)
+  samples[k + 1, ] <- c(beta, sigma2.e)
+}
+
+plot(samples[, 1], typ = "l", xlab = "k", ylab = expression(beta[0]))
+plot(samples[, 2], typ = "l", xlab = "k", ylab = expression(beta[1]))
+plot(samples[, 3], typ = "l", xlab = "k", ylab = expression(sigma^2[epsilon]))
+```
+
+```{r}
+burn.in <- 200
+# E() of beta and sigma2
+colMeans(samples[-c(1:burn.in), ])
+# 95% Equal-tailed CIs
+apply(samples[-c(1:burn.in), ], 2, FUN = quantile, prob = c(0.025, 0.975))
+```
+
+### linear regression
+```{r}
+model <- lm(y ~ X)
+summary(model)
+```
+
+# Simple Linear Regression Example
+```{r}
+data(mtcars)
+model = lm(mpg ~ wt, data = mtcars)
+summary(model)
+plot(mtcars$wt, mtcars$mpg)
+abline(model, col = "red")
+```
+
+```{r}
+library(MASS)
+
+data(mtcars)
+y <- mtcars$mpg
+X <- model.matrix(~ wt, data = mtcars)
+
+m.draws <- 2000  #Number of MCMC samples to draw
+p <- dim(X)[2]  # number of beta coefficients (2: intercept and wt)
+
+samples <- as.data.frame(matrix(NA, nrow = m.draws + 1, ncol = p + 1))
+colnames(samples) <- c(colnames(X), "sigma2")
+
+samples[1, 1:p] = NA  # set sigma2
+samples[1, p + 1] = 1  # initial sigma2
+
+sigma2.beta = 100  # prior variance for each beta (diagonal prior covariance)
+q = 2.01  # shape for inverse-gamma prior on sigma2
+r = 1     # rate for inverse-gamma prior on sigma2
+
+Lambda0 = diag(1 / sigma2.beta, p)  # prior precision = 1/variance
+
+
+for (k in 1:m.draws) {
+  sigma2.e = samples[k, p + 1]
+  
+  # Posterior covariance for beta: (X'X + Lambda0)^{-1} * sigma2.e
+  A <- solve(t(X) %*% X + Lambda0)
+  
+  # Posterior mean for beta: A %*% (X'y + Lambda0 %*% mu0), but mu0 = 0
+  b = t(X) %*% y
+  beta_mean = A %*% b
+  
+  # Sample beta
+  beta <- mvrnorm(n = 1, mu = beta_mean, Sigma = sigma2.e * A)
+  
+  # Sample sigma2 from inverse-gamma
+  residual <- y - X %*% beta
+  shape_post <- q + length(y) / 2
+  rate_post <- r + as.numeric(t(residual) %*% residual) / 2
+  sigma2.e <- 1 / rgamma(1, shape = shape_post, rate = rate_post)
+  
+  samples[k + 1, ] <- c(beta, sigma2.e)
+}
+
+par(mfrow = c(3, 1))
+plot(samples[, 1], type = "l", xlab = "Iteration", ylab = expression(beta[0]), main = "Trace plot: Intercept")
+plot(samples[, 2], type = "l", xlab = "Iteration", ylab = expression(beta[1]), main = "Trace plot: wt")
+plot(samples[, 3], type = "l", xlab = "Iteration", ylab = expression(sigma[epsilon]^2), main = "Trace plot: sigma^2")
+
+burn.in <- 200
+post_samples <- samples[-(1:burn.in), ]
+cat("Posterior means:\n")
+print(colMeans(post_samples))
+
+cat("\n95% Credible Intervals:\n")
+print(apply(post_samples, 2, quantile, probs = c(0.025, 0.975)))
+```
+
+# Multiple Linear Regression Example
+```{r}
+library(MASS)
+data(mtcars)
+y = mtcars$mpg
+X = model.matrix(~ wt + hp + am, data = mtcars)
+
+m.draws = 2000
+p = ncol(X)  # should be 4: (Intercept), wt, hp, am
+
+samples <- as.data.frame(matrix(NA, nrow = m.draws + 1, ncol = p + 1))
+colnames(samples) <- c(colnames(X), "sigma2")
+
+samples[1, 1:p] = NA
+samples[1, p + 1] = 1  # initial sigma^2
+
+# Prior hyperparameters (same as before)
+sigma2.beta = 100   # prior variance for each beta coefficient
+q = 2.01            # shape for Inv-Gamma(sigma^2)
+r = 1               # rate for Inv-Gamma(sigma^2)
+
+# Precompute prior precision matrix (diagonal)
+Lambda0 <- diag(1 / sigma2.beta, p)
+
+
+for (k in 1:m.draws) {
+  sigma2.e <- samples[k, p + 1]
+  
+  # Posterior covariance for beta: (X'X + Lambda0)^{-1}
+  A <- solve(t(X) %*% X + Lambda0)
+  
+  # Posterior mean for beta: A %*% X'y  (since prior mean = 0)
+  beta_mean <- A %*% (t(X) %*% y)
+  
+  # Sample beta from multivariate normal
+  beta <- mvrnorm(n = 1, mu = beta_mean, Sigma = sigma2.e * A)
+  
+  # Compute residuals
+  residuals <- y - X %*% beta
+  
+  # Update sigma^2: inverse-gamma posterior
+  shape_post <- q + length(y) / 2
+  rate_post <- r + as.numeric(t(residuals) %*% residuals) / 2
+  sigma2.e <- 1 / rgamma(1, shape = shape_post, rate = rate_post)
+  
+  # Store the draw
+  samples[k + 1, ] <- c(beta, sigma2.e)
+}
+
+# Plot trace plots (4 betas + sigma2 => 5 plots)
+#par(mfrow = c(5, 1), mar = c(4, 4, 2, 1))
+plot(samples[, 1], type = "l", ylab = expression(beta[0]), main = "(Intercept)")
+plot(samples[, 2], type = "l", ylab = expression(beta["wt"]), main = "wt")
+plot(samples[, 3], type = "l", ylab = expression(beta["hp"]), main = "hp")
+plot(samples[, 4], type = "l", ylab = expression(beta["am"]), main = "am")
+plot(samples[, 5], type = "l", ylab = expression(sigma[epsilon]^2), main = expression(sigma^2))
+
+burn.in = 200
+post_samples = samples[-(1:burn.in), ]
+
+cat("Posterior means:\n")
+print(colMeans(post_samples))
+
+cat("\n95% Credible Intervals:\n")
+print(apply(post_samples, 2, quantile, probs = c(0.025, 0.975)))
+```
+
+Compare with frequentist lm():
+```{r}
+freq_model = lm(mpg ~ wt + hp + am, data = mtcars)
+summary(freq_model)
+```
+
+### The Bayesian linear model revisited
+residuals didn’t appear to be normally distributed. We could change the assumption of
+```{r}
+Sources16 <- ISIT$Sources[ISIT$Station == 16]
+Depth16 <- ISIT$SampleDepth[ISIT$Station == 16]
+Sources16 <- Sources16[order(Depth16)]
+Depth16 <- sort(Depth16)
+```
+
+```{r}
+library(mvtnorm)
+library(MASS)
+# Density function for laplace distribution
+dlaplace <- function(x, mu, phi) {
+  1/(2 * phi) * exp(-abs(x - mu)/phi)
+}
+
+y <- Sources16
+X <- model.matrix(~Depth16)
+
+m.draws <- 5000 #Number of MCMC samples to draw
+samples <- matrix(, m.draws + 1, dim(X)[2] + 1)
+colnames(samples) <- c(colnames(X), "phi")
+samples[1, ] <- c(40, 0, 15)
+
+accept <- matrix(0, m.draws + 1, 2) # Monitor acceptance rate
+colnames(accept) <- c("beta", "phi")
+
+sigma2.beta <- 100 # prior variance for beta
+q <- 1/10^6 #Gamma prior for phi with E() = q/r and Var() = q/r^2
+r <- 1/10^6
+
+# Tuning parameters for Metropolis Hastings algorithm
+beta.tune <- 10  #120
+phi.tune <- 5     #5
+
+for (k in 1:m.draws) {
+  # Sample beta
+  beta.star <- mvrnorm(1, samples[k, 1:2], beta.tune * solve(t(X) %*% X))
+  # ? Covariance matrix = beta.tune^2 * solve(t(X) %*% X)
+  # ? mvrnorm(n = 1, mu, Sigma)
+  mh1 <- prod(dlaplace(y, X %*% beta.star, samples[k, 3])) *
+  prod(dnorm(beta.star, 0, sigma2.beta)) * dgamma(samples[k,3], q, r)
+  mh2 <- prod(dlaplace(y, X %*% samples[k, 1:2], samples[k,3])) * prod(dnorm(samples[k, 1:2], 0, sigma2.beta)) * dgamma(samples[k, 3], q, r)
+  mh3 <- dmvnorm(samples[k, 1:2], beta.star, beta.tune * beta.tune * solve(t(X) %*% X))
+  mh4 <- dmvnorm(beta.star, samples[k, 1:2], beta.tune * beta.tune * solve(t(X) %*% X))
+  R <- min(1, (mh1/mh2) * (mh3/mh4)) #exp(min(0, (..))) if log-likelihood applied
+  if (R > runif(1)) {
+    samples[k + 1, 1:2] <- beta.star
+    accept[k + 1, 1] <- 1
+  } else {
+    samples[k + 1, 1:2] <- samples[k, 1:2]
+  }
+  phi.star <- rgamma(1, shape = samples[k, 3]^2/phi.tune, rate = samples[k, 3]/phi.tune)
+  mh1 <- prod(dlaplace(y, X %*% samples[k + 1, 1:2], phi.star)) *
+  prod(dnorm(samples[k + 1, 1:2], 0, sigma2.beta)) * dgamma(phi.star,q, r)
+  mh2 <- prod(dlaplace(y, X %*% samples[k + 1, 1:2], samples[k, 3])) * prod(dnorm(samples[k + 1, 1:2], 0, sigma2.beta)) * dgamma(samples[k, 3], q, r)
+  mh3 <- dgamma(samples[k, 3], shape = phi.star^2/phi.tune, rate = phi.star/phi.tune)
+  mh4 <- dgamma(phi.star, shape = samples[k, 3]^2/phi.tune, rate = samples[k, 3]/phi.tune)
+  R <- min(1, (mh1/mh2) * (mh3/mh4))
+  if (R > runif(1)) {
+    samples[k + 1, 3] <- phi.star
+    accept[k + 1, 2] <- 1
+  } else {
+    samples[k + 1, 3] <- samples[k, 3]
+  }
+}
+```
+
+```{r}
+colMeans(accept[-1, ])
+par(mfrow = c(3, 1))
+plot(samples[, 1], typ = "l", xlab = "k", ylab = expression(beta[0]))
+plot(samples[, 2], typ = "l", xlab = "k", ylab = expression(beta[1]))
+plot(samples[, 3], typ = "l", xlab = "k", ylab = expression(phi))
+```
+
+
+```{r}
+
+library(mvtnorm)
+library(MASS)
+
+
+data(mtcars)
+y = mtcars$mpg
+X = model.matrix(~wt, data = mtcars)
+
+dlaplace = function(x, mu, phi) {
+  1/(2 * phi) * exp(-abs(x - mu)/phi)
+}
+
+m.draws = 5000
+samples = matrix(, m.draws + 1, ncol(X) + 1)
+colnames(samples) = c(colnames(X), "phi")
+samples[1, ] = c(30, -5, 5)
+
+accept = matrix(0, m.draws + 1, 2)
+colnames(accept) = c("beta", "phi")
+
+sigma2.beta = 100
+q = 1e-6
+r = 1e-6
+
+beta.tune = 0.5 
+phi.tune = 0.3
+
+# MCMC 
+for (k in 1:m.draws) {
+  beta.star = mvrnorm(1, 
+                      mu = samples[k, 1:ncol(X)], 
+                      Sigma = beta.tune^2 * solve(t(X) %*% X))
+  
+  mh1 = prod(dlaplace(y, X %*% beta.star, samples[k, "phi"])) *
+    prod(dnorm(beta.star, 0, sqrt(sigma2.beta))) *
+    dgamma(samples[k, "phi"], shape = q, rate = r)
+  
+  mh2 = prod(dlaplace(y, X %*% samples[k, 1:ncol(X)], samples[k, "phi"])) *
+    prod(dnorm(samples[k, 1:ncol(X)], 0, sqrt(sigma2.beta))) *
+    dgamma(samples[k, "phi"], shape = q, rate = r)
+  
+  mh3 = dmvnorm(samples[k, 1:ncol(X)], beta.star, beta.tune^2 * solve(t(X) %*% X))
+  mh4 = dmvnorm(beta.star, samples[k, 1:ncol(X)], beta.tune^2 * solve(t(X) %*% X))
+  
+  R = min(1, (mh1/mh2) * (mh3/mh4))
+  
+  if (R > runif(1)) {
+    samples[k + 1, 1:ncol(X)] = beta.star
+    accept[k + 1, "beta"] = 1
+  } else {
+    samples[k + 1, 1:ncol(X)] = samples[k, 1:ncol(X)]
+  }
+  
+  phi.star = rgamma(1, 
+                    shape = samples[k, "phi"]^2 / phi.tune, 
+                    rate = samples[k, "phi"] / phi.tune)  # Proposal distribution
+  
+  mh1 = prod(dlaplace(y, X %*% samples[k + 1, 1:ncol(X)], phi.star)) *
+    prod(dnorm(samples[k + 1, 1:ncol(X)], 0, sqrt(sigma2.beta))) *
+    dgamma(phi.star, shape = q, rate = r)
+  
+  mh2 = prod(dlaplace(y, X %*% samples[k + 1, 1:ncol(X)], samples[k, "phi"])) *
+    prod(dnorm(samples[k + 1, 1:ncol(X)], 0, sqrt(sigma2.beta))) *
+    dgamma(samples[k, "phi"], shape = q, rate = r)
+  
+  # MH correction term for asymmetric proposal
+  mh3 = dgamma(samples[k, "phi"], shape = phi.star^2 / phi.tune, rate = phi.star / phi.tune)
+  mh4 = dgamma(phi.star, shape = samples[k, "phi"]^2 / phi.tune, rate = samples[k, "phi"] / phi.tune)
+  
+  R = min(1, (mh1/mh2) * (mh3/mh4))
+  
+  if (R > runif(1)) {
+    samples[k + 1, "phi"] = phi.star
+    accept[k + 1, "phi"] = 1
+  } else {
+    samples[k + 1, "phi"] = samples[k, "phi"]
+  }
+}
+
+cat("Acceptance rates:\n")
+print(colMeans(accept[-200, ]))
+
+par(mfrow = c(3, 1), mar = c(4, 4, 2, 1))
+plot(samples[, 1], type = "l", 
+     xlab = "Iteration", ylab = expression(beta[0]), main = "Intercept Trace")
+plot(samples[, 2], type = "l", 
+     xlab = "Iteration", ylab = expression(beta[1]), main = "Slope Trace")
+plot(samples[, "phi"], type = "l", 
+     xlab = "Iteration", ylab = expression(phi), main = "Scale Parameter Trace")
+
+
+cat("\nPosterior mean estimates:\n")
+print(colMeans(samples[-200, ]))
+```
+
+
+# Map
+```{r}
+library(spData)
+library(sf)
+library(spdep)
+library(ggplot2)
+map <- st_read(system.file("shapes/columbus.gpkg", package = "spData"), quiet = TRUE)
+```
+
+```{r}
+library(spdep)
+nb <- spdep::poly2nb(map, queen = TRUE)
+head(nb)
+```
+```{r}
+st_crs(map) <- "EPSG:32650"
+map <- st_set_crs(map, "EPSG:32650")
+```
+
+```{r}
+plot(st_geometry(map), border = "lightgray")
+plot.nb(nb, st_geometry(map), add = TRUE)
+id <- 20 # areaid
+map$neighbors <- "other"
+map$neighbors[id] <- "area"
+map$neighbors[nb[[id]]] <- "neighbors"
+ggplot(map) + geom_sf(aes(fill = neighbors)) + theme_bw() + scale_fill_manual(values = c("gray30", "gray", "white"))
+```
+
+
+```{r}
+library(spData)
+library(sf)
+library(mapview)
+map <- st_read(system.file("shapes/boston_tracts.gpkg",package = "spData"), quiet = TRUE)
+map$vble <- map$MEDV
+mapview(map, zcol = "vble")
+```
+
+```{r}
+# Neighbors
+library(spdep)
+nb <- poly2nb(map, queen = TRUE) # queensharespointorborder
+nbw <- nb2listw(nb, style = "W")
+# GlobalMoran'sI
+gmoran <- moran.test(map$vble, nbw,
+alternative = "greater")
+gmoran
+#???
+gmoran[["estimate"]][["Moran Istatistic"]] # Moran'sI
+gmoran[["statistic"]] # z-score
+gmoran[["p.value"]] # p-value
+
+```
+
+```{r}
+gmoranMC <- moran.mc(map$vble, nbw, nsim = 999)
+gmoranMC
+hist(gmoranMC$res)
+abline(v = gmoranMC$statistic, col = "red")
+```
+
+```{r}
+moran.plot(map$vble, nbw)
+```
+
+```{r}
+lmoran <- localmoran(map$vble, nbw, alternative = "greater")
+head(lmoran)
+
+library(tmap)
+tmap_mode("plot")
+
+map$lmI <- lmoran[, "Ii"] # localMoran'sI
+map$lmZ <- lmoran[, "Z.Ii"] # z-scores
+# p-valuescorrespondingtoalternativegreater
+map$lmp <- lmoran[, "Pr(z > E(Ii))"]
+
+p1 <- tm_shape(map) +
+tm_polygons(col = "vble", title = "vble", style = "quantile") +
+tm_layout(legend.outside = TRUE)
+p2 <- tm_shape(map) +
+tm_polygons(col = "lmI", title = "Local Moran'sI",
+style = "quantile") +
+tm_layout(legend.outside = TRUE)
+p3 <- tm_shape(map) +
+tm_polygons(col = "lmZ", title = "Z-score",
+breaks = c(-Inf, 1.65, Inf)) +
+tm_layout(legend.outside = TRUE)
+p4 <- tm_shape(map) +
+tm_polygons(col = "lmp", title = "p-value",
+breaks = c(-Inf, 0.05, Inf)) +
+tm_layout(legend.outside = TRUE)
+tmap_arrange(p1, p2,p3,p4)
+
+tm_shape(map) + tm_polygons(col = "lmZ",
+title = "Local Moran'sI", style = "fixed",
+breaks = c(-Inf, -1.96, 1.96, Inf),
+labels = c("Negative SAC", "No SAC", "Positive SAC"),
+palette = c("blue", "white", "red")) +
+tm_layout(legend.outside = TRUE)
+
+lmoran <- localmoran(map$vble, nbw, alternative = "two.sided")
+head(lmoran)
+
+mp <- moran.plot(as.vector(scale(map$vble)), nbw)
+map$quadrant <- NA
+# high-high
+map[(mp$x >= 0 & mp$wx >= 0) & (map$lmp <= 0.05), "quadrant"]<- 1
+# low-low
+map[(mp$x <= 0 & mp$wx <= 0) & (map$lmp <= 0.05), "quadrant"]<- 2
+# high-low
+map[(mp$x >= 0 & mp$wx <= 0) & (map$lmp <= 0.05), "quadrant"]<- 3
+# low-high
+map[(mp$x <= 0 & mp$wx >= 0) & (map$lmp <= 0.05), "quadrant"]<- 4
+# non-significant
+map[(map$lmp > 0.05), "quadrant"] <- 5
+```
+
+### HousingpricesinBoston,Massachusetts,USA
+```{r}
+library(sf)
+library(spData)
+map <- st_read(system.file("shapes/boston_tracts.gpkg",
+package = "spData"), quiet = TRUE)
+library(mapview)
+map$vble <- log(map$MEDV)
+mapview(map, zcol = "vble")
+library(GGally)
+ggpairs(data = map, columns = c("vble", "CRIM", "RM"))
+```
+
+### 
+```{r}
+library(SpatialEpi)
+data(pennLC)
+class(pennLC)
+names(pennLC)
+```
+```{r}
+library(sf)
+map <- st_as_sf(pennLC$spatial.polygon)
+countynames <- sapply(slot(pennLC$spatial.polygon, "polygons"),
+function(x){slot(x, "ID")})
+map$county <- countynames
+head(map)
+```
+```{r}
+library(dplyr)
+d <- group_by(pennLC$data, county) %>% summarize(Y = sum(cases))
+head(d)
+```
+
+```{r}
+pennLC$data <- pennLC$data[order(pennLC$data$county,
+pennLC$data$race, pennLC$data$gender, pennLC$data$age), ]
+E <- expected(population = pennLC$data$population,
+cases = pennLC$data$cases, n.strata = 16)
+```
+
+```{r}
+d$E <- E
+head(d)
+d <- dplyr::left_join(d, pennLC$smoking, by = "county")
+d$SMR <- d$Y/d$E
+map <- dplyr::left_join(map, d, by = "county")
+library(mapview)
+library(RColorBrewer)
+pal <- colorRampPalette(brewer.pal(9, "YlOrRd"))
+mapview(map, zcol = "SMR", color = "gray", alpha.regions = 0.8, layer.name = "SMR", col.regions = pal, map.types = "CartoDB.Positron")
+
+```
+
+```{r}
+library(mapview)
+library(RColorBrewer)
+library(leafpop)
+pal <- colorRampPalette(brewer.pal(9, "YlOrRd"))
+mapviewOptions(fgb = FALSE)
+popuptable <- leafpop::popupTable(dplyr::mutate_if(map, is.numeric, round, digits = 2),
+                                  zcol = c("county", "Y", "E", "smoking", "SMR"),
+                                  row.numbers = FALSE, feature.id = FALSE)
+mapview(map, zcol = "SMR", color = "gray", col.regions = pal, highlight = leaflet::highlightOptions(weight = 4), popup = popuptable)
+```
+
+
+
+```{r}
+library(spdep)
+library(Matrix)
+library(INLA)
+
+nb <- poly2nb(map)
+nb2INLA("map.adj", nb)
+g <- inla.read.graph(filename = "map.adj")
+```
+
+```{r}
+map$re_u <- 1:nrow(map)
+map$re_v <- 1:nrow(map)
+#???
+formula <- Y ~ smoking +
+  f(re_u, model = "besag", graph = g, scale.model = TRUE) + f(re_v, model = "iid")
+res <- inla(formula, family = "poisson", data = map, E = E,
+            control.predictor = list(compute = TRUE),
+            control.compute = list(return.marginals.predictor = TRUE))
+```
+
+```{r}
+res$summary.fixed
+res$summary.fitted.values[1:3, ]
+# relativerisk
+map$RR <- res$summary.fitted.values[, "mean"]
+# lowerandupperlimits95%CI
+map$LL <- res$summary.fitted.values[, "0.025quant"]
+map$UL <- res$summary.fitted.values[, "0.975quant"]
+library(mapview)
+library(RColorBrewer)
+library(leafpop)
+pal <- colorRampPalette(brewer.pal(9, "YlOrRd"))
+mapviewOptions(fgb = FALSE)
+mapview(map, zcol = "RR", color = "gray", col.regions = pal,
+highlight = leaflet::highlightOptions(weight = 4),
+popup = leafpop::popupTable(dplyr::mutate_if(map, is.numeric,
+round, digits = 2),
+zcol = c("county", "Y", "E", "smoking", "SMR", "RR", "LL", "UL"),
+row.numbers = FALSE, feature.id = FALSE))
+```
+
+```{r}
+at <- seq(min(map$SMR), max(map$SMR), length.out = 8)
+m1 <- mapview(map, zcol = "SMR", color = "gray",
+col.regions = pal, at = at)
+m2 <- mapview(map, zcol = "RR", color = "gray",
+col.regions = pal, at = at)
+leafsync::sync(m1, m2)
+
+```
+

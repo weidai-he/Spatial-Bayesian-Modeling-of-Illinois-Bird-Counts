@@ -1,0 +1,152 @@
+---
+title: "IBC p MCMC Simulation with rstan"
+author: "Weidai He"
+date: "2025-11-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+load("bird_long.RData")
+```
+
+```{r}
+head(bird_long)
+```
+
+## MCMC using rstan
+```{r message=FALSE, warning=FALSE}
+library(rstan)        # Stan interface for MCMC
+library(tidyverse)    # Data manipulation and visualization
+library(bayesplot)    # Bayesian posterior visualization
+library(shinystan)    # Interactive convergence diagnostics
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())  # Use multi-core processing
+```
+
+```{r}
+# example dataset
+#bird_data <- tibble(
+#  count_year = c(1975, 1976, 1977, 1978, 1979, 1980),
+#  county_name = rep("Adams", 6),
+#  count_total = c(194.9976, 252.9972, 234.9986, 407.0025, 443.9958, 240.0020),
+#  Party_Hours = c(56, 62, 62, 75, 102, 79),  # Effort variable (\xi)
+#  birdsperhr = c(3.4821, 4.0806, 3.7903, 5.4267, 4.3529, 3.0380)
+#)
+
+# Inspect the data
+bird_long_clean <- bird_long %>% 
+  drop_na()
+bird_data = bird_long_clean
+#print(bird_data)
+
+# Prepare data for Stan (convert count_total to integers for count models)
+stan_data <- list(
+  N = nrow(bird_data),                  # Sample size
+  Party_Hours = bird_data$Party_Hours,  # Effort variable (\xi)
+  count_total = round(bird_data$count_total)  # Count data (must be integers)
+)
+```
+
+```{r}
+stan_code_updated <- "
+data {
+  int<lower=1> N;
+  vector[N] Party_Hours;
+  int<lower=0> count_total[N];
+  // Add scaled effort to reduce numerical issues
+  real xi_mean;  // Mean of Party_Hours for centering
+}
+
+parameters {
+  real p;                       // Keep p but add tighter priors
+  real<lower=0> B;
+  real A;
+  real<lower=0> theta;
+}
+
+transformed parameters {
+  vector[N] mu;
+  vector[N] xi_scaled = Party_Hours / xi_mean;  // Scale effort to ~1 (reduces exponentiation issues)
+  
+  for (n in 1:N) {
+    if (abs(p) < 1e-6) {
+      mu[n] = exp(A + B * log(xi_scaled[n]));
+    } else {
+      mu[n] = exp(A + B * (pow(xi_scaled[n], p) - 1) / p);
+    }
+  }
+}
+
+model {
+  // Tighter priors to constrain parameters
+  p ~ normal(-1.5, 0.5);  // Informative prior: center on -1.5 (per the paper)
+  B ~ normal(0, 2);       // Narrower to reduce uncertainty
+  A ~ normal(log(mean(count_total)), 1);  // Prior centered on observed mean
+  theta ~ gamma(3, 0.3);  // Tighter control on overdispersion
+  
+  count_total ~ neg_binomial_2(mu, theta);
+}
+
+generated quantities {
+  int y_rep[N];
+  for (n in 1:N) {
+    y_rep[n] = neg_binomial_2_rng(mu[n], theta);
+  }
+}
+"
+```
+
+```{r}
+
+stan_data_updated <- stan_data %>% 
+  c(list(xi_mean = mean(bird_data$Party_Hours)))
+```
+
+
+```{r}
+model_updated <- stan_model(model_code = stan_code_updated)
+
+# Step 2: Run sampling with the compiled model
+fit_updated <- sampling(
+  object = model_updated,  # Use the compiled model here
+  data = stan_data_updated,
+  chains = 1,
+  iter = 4000,
+  warmup = 2000,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 15
+  ),
+  seed = 590
+)
+```
+
+```{r}
+# 1. Check R-hat statistics (converged if < 1.05)
+print(fit_updated, pars = c("p", "B", "A", "theta"), probs = c(0.025, 0.5, 0.975))
+
+mcmc_trace(fit_updated, pars = "A", facet_args = list(nrow = 1, ncol = 3)) +
+  ggtitle("Trace Plots for Parameter A")
+
+mcmc_trace(fit_updated, pars = "B", facet_args = list(nrow = 1, ncol = 3)) +
+  ggtitle("Trace Plots for Parameter B")
+
+mcmc_trace(fit_updated, pars = "theta", facet_args = list(nrow = 1, ncol = 3)) +
+  ggtitle("Trace Plots for Parameter theta")
+
+mcmc_trace(fit_updated, pars = "p", facet_args = list(nrow = 1, ncol = 3)) +
+  ggtitle("Trace Plots for Parameter p")
+
+# For density overlay (requires >=2 chains)
+#mcmc_dens_overlay(fit_updated, pars = "p") +
+ # ggtitle("Posterior Density of p (3 Chains Overlaid)")
+
+# 4. Interactive diagnostics (optional: close window manually after inspection)
+#launch_shinystan(fit_updated)
+```
+
